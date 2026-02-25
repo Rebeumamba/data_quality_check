@@ -701,10 +701,21 @@ def load_data(source, **kw) -> pd.DataFrame:
         return pd.read_csv(kw["url"])
     elif source == "s3":
         import boto3
-        s3  = boto3.client("s3",aws_access_key_id=kw["key"],aws_secret_access_key=kw["secret"],region_name=kw["region"])
-        obj = s3.get_object(Bucket=kw["bucket"],Key=kw["path"])
+        from botocore import UNSIGNED
+        from botocore.config import Config
+        # Bucket public (pas de credentials) → mode anonyme
+        if not kw.get("key") and not kw.get("secret"):
+            s3 = boto3.client("s3", region_name=kw["region"],
+                              config=Config(signature_version=UNSIGNED))
+        else:
+            s3 = boto3.client("s3", aws_access_key_id=kw["key"],
+                              aws_secret_access_key=kw["secret"],
+                              region_name=kw["region"])
+        obj = s3.get_object(Bucket=kw["bucket"], Key=kw["path"])
         raw = obj["Body"].read()
-        return pd.read_csv(io.BytesIO(raw)) if kw["path"].endswith(".csv") else pd.read_parquet(io.BytesIO(raw))
+        if kw["path"].endswith(".csv"):    return pd.read_csv(io.BytesIO(raw))
+        elif kw["path"].endswith(".parquet"): return pd.read_parquet(io.BytesIO(raw))
+        else: return pd.read_csv(io.BytesIO(raw), sep=None, engine="python")
     elif source == "azure":
         from azure.storage.blob import BlobServiceClient
         client = BlobServiceClient.from_connection_string(kw["conn"])
@@ -918,37 +929,29 @@ if step == 1:
         ("🐘","PostgreSQL / MySQL","Host + requête SQL","postgres"),
     ]
 
+    # CSS global pour masquer les boutons "Sélectionner" sous les cartes
+    st.markdown("""
+    <style>
+    .src-btn-wrap { position:relative; margin-top:-88px; z-index:10; opacity:0; height:88px; }
+    .src-btn-wrap button { height:88px !important; width:100% !important; cursor:pointer !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
     sel = st.session_state.source_type
     cols6 = st.columns(3)
     for i,(icon,name,desc,key) in enumerate(sources):
         with cols6[i%3]:
-            is_sel = sel == key
-            border_color = "#4F46E5" if is_sel else "#E8E6E0"
-            bg_color      = "#EEF2FF" if is_sel else "#FFFFFF"
-            check         = "✓ " if is_sel else ""
-            label = f"""{check}{icon}\n{name}\n{desc}"""
-            st.markdown(f"""<style>
-            div[data-testid="stButton"]:has(+ * #anchor_{key}) > button,
-            #card_wrap_{key} + div > div > button {{
-              background:{bg_color} !important;
-              border:2px solid {border_color} !important;
-              border-radius:14px !important;
-              padding:18px 10px !important;
-              width:100% !important;
-              text-align:center !important;
-              transition:all .18s !important;
-              box-shadow:0 1px 4px rgba(0,0,0,0.04) !important;
-              color:#1C1917 !important;
-              font-family:"Cabinet Grotesk",sans-serif !important;
-              height:auto !important;
-              white-space:pre-wrap !important;
-              line-height:1.5 !important;
-              font-size:0.82rem !important;
-              font-weight:{"700" if is_sel else "500"} !important;
-            }}
-            </style>""", unsafe_allow_html=True)
-            if st.button(label, key=f"src_{key}"):
+            selected = "selected" if sel == key else ""
+            st.markdown(f"""
+            <div class="src-card {selected}">
+              <div class="src-icon">{icon}</div>
+              <div class="src-name">{name}</div>
+              <div class="src-desc">{desc}</div>
+            </div>
+            <div class="src-btn-wrap">""", unsafe_allow_html=True)
+            if st.button("x", key=f"src_{key}", help=f"Sélectionner {name}"):
                 st.session_state.source_type = key; st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     src  = st.session_state.source_type
