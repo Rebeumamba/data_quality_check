@@ -1,4 +1,13 @@
 """
+app.py — DataQuality Agent v3
+Fichier unique : Auth + Engine + Interface Streamlit
+Déployer sur Streamlit Cloud avec requirements.txt
+"""
+
+# ══════════════════════════════════════════════════════════════
+# IMPORTS
+# ══════════════════════════════════════════════════════════════
+"""
 DataQuality Agent — app_v3.py
 Streamlit Cloud · Login/Password · 4 étapes · Engine auto (Pandas/PySpark)
 
@@ -11,6 +20,8 @@ Structure :
 """
 
 import streamlit as st
+import secrets as secrets_mod
+import string
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -22,8 +33,672 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # Imports locaux
-from engine import run_scoring, ColumnAutoDetector, TableScore, SPARK_AVAILABLE
-import auth
+
+# ══════════════════════════════════════════════════════════════
+# AUTH — Comptes utilisateurs
+# ══════════════════════════════════════════════════════════════
+"""
+auth.py — Authentification simplifiée
+Compte de démonstration hardcodé — pas de base de données.
+"""
+
+# ══════════════════════════════════════════════════════════════
+# COMPTE DE TEST — modifier ici pour changer les accès
+# ══════════════════════════════════════════════════════════════
+
+USERS = {
+    "demo": {
+        "password": "dataquality2025",
+        "role":     "client",
+    },
+    "admin": {
+        "password": "admin1234",
+        "role":     "admin",
+    },
+}
+
+
+# ══════════════════════════════════════════════════════════════
+# API (identique à avant — app_v3.py n'a pas besoin de changer)
+# ══════════════════════════════════════════════════════════════
+
+def verify_login(username: str, password: str):
+    user = USERS.get(username)
+    if user and user["password"] == password:
+        return {"username": username, "role": user["role"]}
+    return None
+
+def is_logged_in(session_state) -> bool:
+    return session_state.get("user") is not None
+
+def get_current_user(session_state):
+    return session_state.get("user")
+
+def login(session_state, username: str, password: str) -> bool:
+    user = verify_login(username, password)
+    if user:
+        session_state["user"] = user
+        return True
+    return False
+
+def logout(session_state):
+    session_state["user"] = None
+    for key in ["df","result","rules","source_name","source_type",
+                "step","freshness_h","alert_t","detected"]:
+        if key in session_state:
+            del session_state[key]
+
+# ══════════════════════════════════════════════════════════════
+# ENGINE — Scoring (Pandas + PySpark)
+# ══════════════════════════════════════════════════════════════
+"""
+engine.py — Moteur de scoring unifié
+Auto-détecte PySpark si disponible, sinon bascule sur Pandas.
+Importé par app_v3.py ET par le notebook Databricks client.
+"""
+
+import pandas as pd
+import numpy as np
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional, List
+
+# ── Détection PySpark ─────────────────────────────────────────
+try:
+    from pyspark.sql import DataFrame as SparkDF
+    from pyspark.sql import functions as F
+    from pyspark.sql import types as T
+    SPARK_AVAILABLE = True
+except ImportError:
+    SPARK_AVAILABLE = False
+
+
+# ══════════════════════════════════════════════════════════════
+# DATA CLASSES
+# ══════════════════════════════════════════════════════════════
+
+@dataclass
+class ColumnScore:
+    name:         str
+    completeness: float = 0.0
+    uniqueness:   float = 0.0
+    overall:      float = 0.0
+    issues:       list  = field(default_factory=list)
+
+@dataclass
+class TableScore:
+    table_name:      str
+    row_count:       int
+    col_count:       int
+    engine:          str   = "pandas"   # "pandas" ou "pyspark"
+    completeness:    float = 0.0
+    uniqueness:      float = 0.0
+    freshness:       float = 0.0
+    consistency:     float = 0.0
+    distribution:    float = 0.0
+    validity:        float = 0.0
+    correlation:     float = 0.0
+    volumetry:       float = 0.0
+    standardization: float = 0.0
+    global_score:    float = 0.0
+    columns:         list  = field(default_factory=list)
+    issues:          list  = field(default_factory=list)
+    scored_at:       str   = field(default_factory=lambda: datetime.now().isoformat())
+    custom_rules:    list  = field(default_factory=list)
+
+
+# ══════════════════════════════════════════════════════════════
+# AUTO DETECTOR (pandas — fonctionne partout)
+# ══════════════════════════════════════════════════════════════
+
+class ColumnAutoDetector:
+    EMAIL_KW  = ["email","mail","courriel"]
+    PHONE_KW  = ["phone","tel","mobile","gsm","portable"]
+    DATE_KW   = ["date","created_at","updated_at","timestamp",
+                 "subscription","since","birth","expir","modified_at","datetime"]
+    START_KW  = ["created","start","begin","debut","open","first","from"]
+    END_KW    = ["end","fin","expir","close","stop","last","to","until"]
+    EMAIL_RE  = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+
+    def detect(self, df: pd.DataFrame) -> dict:
+        res = {"email_columns":[],"phone_columns":[],"date_columns":[],"correlation_rules":[]}
+        for col in df.columns:
+            cl = col.lower().strip()
+            ct = str(df[col].dtype)
+            if any(kw in cl for kw in self.EMAIL_KW):
+                res["email_columns"].append(col); continue
+            if any(kw in cl for kw in self.PHONE_KW):
+                res["phone_columns"].append(col); continue
+            if any(kw in cl for kw in self.DATE_KW) or "datetime" in ct:
+                res["date_columns"].append(col); continue
+            if ct == "object" and len(df[col].dropna()) > 0:
+                samp = df[col].dropna().astype(str).sample(min(30, len(df[col].dropna())), random_state=42)
+                if pd.to_datetime(samp, errors="coerce").notna().mean() > 0.7:
+                    res["date_columns"].append(col); continue
+                if samp.str.match(self.EMAIL_RE).mean() > 0.7:
+                    res["email_columns"].append(col)
+
+        # Corrélations auto HT/TTC
+        num = df.select_dtypes(include=["float64","int64"]).columns.tolist()
+        ht  = [c for c in num if "ht"  in c.lower() and "ttc" not in c.lower()]
+        ttc = [c for c in num if "ttc" in c.lower()]
+        for h, t in zip(ht, ttc):
+            res["correlation_rules"].append({
+                "col_a": h, "col_b": t, "operator": "<",
+                "name": f"{h} < {t}", "severity": "high"
+            })
+
+        # Corrélations auto dates début/fin
+        dates  = res["date_columns"]
+        starts = [c for c in dates if any(kw in c.lower() for kw in self.START_KW)]
+        ends   = [c for c in dates if any(kw in c.lower() for kw in self.END_KW)]
+        for s, e in zip(starts, ends):
+            if s != e:
+                res["correlation_rules"].append({
+                    "col_a": s, "col_b": e, "operator": "<",
+                    "name": f"{s} avant {e}", "severity": "high"
+                })
+        return res
+
+
+# ══════════════════════════════════════════════════════════════
+# ENGINE PANDAS
+# ══════════════════════════════════════════════════════════════
+
+class PandasScorer:
+    """Engine pandas — fonctionne partout, jusqu'à ~5M lignes."""
+
+    WEIGHTS = {
+        "completeness":0.20,"consistency":0.15,"validity":0.15,
+        "uniqueness":0.12,"freshness":0.10,"distribution":0.08,
+        "correlation":0.08,"volumetry":0.07,"standardization":0.05,
+    }
+
+    def __init__(self, table_name="dataset", date_columns=None, email_columns=None,
+                 phone_columns=None, custom_rules=None, correlation_rules=None,
+                 freshness_threshold_hours=24):
+        self.table_name = table_name
+        self.date_columns = date_columns or []
+        self.email_columns = email_columns or []
+        self.phone_columns = phone_columns or []
+        self.custom_rules = custom_rules or []
+        self.correlation_rules = correlation_rules or []
+        self.freshness_threshold_hours = freshness_threshold_hours
+
+    def score(self, df: pd.DataFrame) -> TableScore:
+        r = TableScore(
+            table_name=self.table_name,
+            row_count=len(df),
+            col_count=len(df.columns),
+            engine="pandas",
+            custom_rules=self.custom_rules,
+        )
+        r.completeness    = self._completeness(df, r)
+        r.uniqueness      = self._uniqueness(df, r)
+        r.freshness       = self._freshness(df, r)
+        r.consistency     = self._consistency(df, r)
+        r.distribution    = self._distribution(df, r)
+        r.validity        = self._validity(df, r)
+        r.correlation     = self._correlation(df, r)
+        r.volumetry       = 80.0  # One-shot : neutre
+        r.standardization = self._standardization(df, r)
+        r.global_score    = round(sum(getattr(r, d) * w for d, w in self.WEIGHTS.items()), 1)
+        r.columns         = self._column_scores(df)
+        return r
+
+    def _completeness(self, df, r):
+        if df.empty: return 0.0
+        for col, pct in (df.isnull().mean() * 100).items():
+            if pct > 20:
+                r.issues.append({"dimension":"completeness",
+                    "severity":"high" if pct > 50 else "medium",
+                    "column": col, "message": f"{pct:.1f}% de valeurs nulles"})
+        return round((1 - df.isnull().sum().sum() / df.size) * 100, 1)
+
+    def _uniqueness(self, df, r):
+        if len(df) < 2: return 100.0
+        dup = df.duplicated().sum(); pct = dup / len(df) * 100
+        if pct > 5:
+            r.issues.append({"dimension":"uniqueness",
+                "severity":"high" if pct > 20 else "medium",
+                "column":"all", "message": f"{dup:,} lignes dupliquées ({pct:.1f}%)"})
+        return round(max(0, 100 - pct * 2), 1)
+
+    def _freshness(self, df, r):
+        if not self.date_columns: return 75.0
+        scores = []; now = pd.Timestamp.now()
+        for col in self.date_columns:
+            if col not in df.columns: continue
+            try:
+                dates = pd.to_datetime(df[col], errors="coerce").dropna()
+                if dates.empty: continue
+                lag = (now - dates.max()).total_seconds() / 3600
+                scores.append(max(0, 100 - (lag / self.freshness_threshold_hours) * 100))
+                if lag > self.freshness_threshold_hours:
+                    r.issues.append({"dimension":"freshness",
+                        "severity":"high" if lag > self.freshness_threshold_hours * 3 else "medium",
+                        "column": col, "message": f"Dernière donnée il y a {lag:.0f}h"})
+            except: pass
+        return round(np.mean(scores), 1) if scores else 75.0
+
+    def _consistency(self, df, r):
+        v, c = 0, 0
+        for col in df.select_dtypes(include=["float64","int64"]).columns:
+            if any(kw in col.lower() for kw in ["price","prix","amount","montant","age","qty","quantity","stock"]):
+                neg = (df[col] < 0).sum(); v += neg; c += len(df)
+                if neg > 0:
+                    r.issues.append({"dimension":"consistency","severity":"high",
+                        "column":col,"message":f"{neg:,} valeurs negatives"})
+        for rule in self.custom_rules:
+            col_name = rule.get("column","")
+            rule_op  = rule.get("operator","")
+            rule_val = rule.get("value","")
+            try:
+                # Strategie 1 : df.eval() direct
+                n = (~df.eval(rule["condition"])).sum()
+                c += len(df); v += n
+                if n > 0:
+                    r.issues.append({"dimension":"consistency",
+                        "severity":rule.get("severity","medium"),
+                        "column":col_name or "custom",
+                        "message":f"Regle {rule['name']}: {n:,} violations"})
+            except Exception:
+                try:
+                    # Strategie 2 : renommer colonnes pour eval() (espaces, tirets...)
+                    col_map = {c2: re.sub(r"[^a-zA-Z0-9_]", "_", c2) for c2 in df.columns}
+                    safe_df = df.rename(columns=col_map)
+                    safe_cond = rule["condition"]
+                    for orig, safe in sorted(col_map.items(), key=lambda x: -len(x[0])):
+                        safe_cond = safe_cond.replace(f"", safe).replace(orig, safe)
+                    n = (~safe_df.eval(safe_cond)).sum()
+                    c += len(df); v += n
+                    if n > 0:
+                        r.issues.append({"dimension":"consistency",
+                            "severity":rule.get("severity","medium"),
+                            "column":col_name or "custom",
+                            "message":f"Regle {rule['name']}: {n:,} violations"})
+                except Exception:
+                    try:
+                        # Strategie 3 : evaluation directe pandas (fallback)
+                        if col_name and col_name in df.columns and rule_op:
+                            s = pd.to_numeric(df[col_name], errors="coerce")
+                            val_f = float(rule_val)
+                            ops = {">": s>val_f, ">=": s>=val_f, "<": s<val_f,
+                                   "<=": s<=val_f, "==": s==val_f, "!=": s!=val_f}
+                            if rule_op in ops:
+                                n = (~ops[rule_op]).sum(); c += len(df); v += n
+                                if n > 0:
+                                    r.issues.append({"dimension":"consistency",
+                                        "severity":rule.get("severity","medium"),
+                                        "column":col_name,
+                                        "message":f"Regle {rule['name']}: {n:,} violations"})
+                    except Exception:
+                        r.issues.append({"dimension":"consistency","severity":"low",
+                            "column":col_name or "?",
+                            "message":f"Regle non applicable sur ce dataset: {rule['name']}"})
+        return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
+
+    def _distribution(self, df, r):
+        cols = df.select_dtypes(include=["float64","int64"]).columns
+        if not len(cols): return 90.0
+        ratios = []
+        for col in cols:
+            s = df[col].dropna()
+            if len(s) < 10: continue
+            Q1, Q3 = s.quantile(0.25), s.quantile(0.75); IQR = Q3 - Q1
+            if IQR == 0: continue
+            out = ((s < Q1 - 3*IQR) | (s > Q3 + 3*IQR)).sum()
+            ratio = out / len(s); ratios.append(ratio)
+            if ratio > 0.05:
+                r.issues.append({"dimension":"distribution","severity":"medium",
+                    "column":col,"message":f"{out:,} outliers extrêmes ({ratio*100:.1f}%)"})
+        return 90.0 if not ratios else round(max(0, 100 - np.mean(ratios) * 500), 1)
+
+    def _validity(self, df, r):
+        v, c = 0, 0
+        ER = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+        PR = re.compile(r'^[\+\d][\d\s\-\.\(\)]{6,20}$')
+        ecols = self.email_columns or [col for col in df.columns if any(kw in col.lower() for kw in ["email","mail"])]
+        for col in ecols:
+            if col not in df.columns: continue
+            s = df[col].dropna().astype(str); inv = s[~s.str.match(ER)].count()
+            c += len(s); v += inv
+            if inv > 0:
+                pct = inv / len(s) * 100
+                r.issues.append({"dimension":"validity",
+                    "severity":"high" if pct > 20 else "medium",
+                    "column":col,"message":f"{inv:,} emails invalides ({pct:.1f}%)"})
+        pcols = self.phone_columns or [col for col in df.columns if any(kw in col.lower() for kw in ["phone","tel","mobile","gsm"])]
+        for col in pcols:
+            if col not in df.columns: continue
+            s = df[col].dropna().astype(str); inv = s[~s.str.match(PR)].count()
+            c += len(s); v += inv
+            if inv > 0:
+                r.issues.append({"dimension":"validity","severity":"medium",
+                    "column":col,"message":f"{inv:,} numéros invalides"})
+        return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
+
+    def _correlation(self, df, r):
+        v, c = 0, 0
+        for rule in self.correlation_rules:
+            ca, cb, op = rule.get("col_a"), rule.get("col_b"), rule.get("operator","<")
+            if ca not in df.columns or cb not in df.columns: continue
+            try:
+                a = pd.to_numeric(df[ca], errors="coerce")
+                b = pd.to_numeric(df[cb], errors="coerce")
+                mask = a.notna() & b.notna(); c += mask.sum()
+                viol = (a[mask] >= b[mask]).sum() if op == "<" else (a[mask] > b[mask]).sum()
+                v += viol
+                if viol > 0:
+                    rule_name = rule.get("name","")
+                    r.issues.append({"dimension":"correlation",
+                        "severity":rule.get("severity","high"),
+                        "column":f"{ca}/{cb}",
+                        "message":f"{viol:,} violations de '{rule_name}'"})
+            except: pass
+        return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
+
+    def _standardization(self, df, r):
+        FN = {"n/a","na","null","none","-","--","unknown","inconnu","?","nan","nd"}
+        v, c = 0, 0
+        for col in df.select_dtypes(include=["object"]).columns:
+            s = df[col].dropna().astype(str)
+            if not len(s): continue
+            c += len(s)
+            sp = (s != s.str.strip()).sum(); v += sp
+            if sp > 0:
+                r.issues.append({"dimension":"standardization","severity":"low",
+                    "column":col,"message":f"{sp:,} valeurs avec espaces superflus"})
+            fn = s.str.lower().str.strip().isin(FN).sum(); v += fn
+            if fn > 0:
+                r.issues.append({"dimension":"standardization","severity":"medium",
+                    "column":col,"message":f"{fn:,} faux nulls (N/A, null, -…)"})
+            nu = s.nunique(); nl = s.str.lower().str.strip().nunique()
+            if 2 <= nu <= 50 and nl < nu:
+                v += (nu - nl) * 10
+                r.issues.append({"dimension":"standardization","severity":"medium",
+                    "column":col,"message":f"Casse inconsistante : {nu} variantes pour {nl} valeurs réelles"})
+        return 90.0 if c == 0 else round(max(0, min(100, (1 - v / c) * 100)), 1)
+
+    def _column_scores(self, df):
+        out = []
+        for col in df.columns:
+            s = df[col]
+            cp = round((1 - s.isnull().mean()) * 100, 1)
+            uq = round(s.nunique() / max(len(s), 1) * 100, 1)
+            overall = min(round(cp * 0.6 + min(uq * 1.5, 100) * 0.4, 1), 100)
+            out.append(ColumnScore(name=col, completeness=cp, uniqueness=uq, overall=overall))
+        return out
+
+
+# ══════════════════════════════════════════════════════════════
+# ENGINE PYSPARK (optionnel — si cluster disponible)
+# ══════════════════════════════════════════════════════════════
+
+class PySparkScorer:
+    """
+    Engine PySpark natif — pour clients avec Databricks.
+    Identique à PandasScorer mais 100% distribué, 100M+ lignes.
+    Instancié uniquement si SPARK_AVAILABLE = True.
+    """
+
+    WEIGHTS = {
+        "completeness":0.20,"consistency":0.15,"validity":0.15,
+        "uniqueness":0.12,"freshness":0.10,"distribution":0.08,
+        "correlation":0.08,"volumetry":0.07,"standardization":0.05,
+    }
+
+    def __init__(self, spark, table_name="dataset", date_columns=None,
+                 email_columns=None, phone_columns=None, custom_rules=None,
+                 correlation_rules=None, freshness_threshold_hours=24):
+        self.spark = spark
+        self.table_name = table_name
+        self.date_columns = date_columns or []
+        self.email_columns = email_columns or []
+        self.phone_columns = phone_columns or []
+        self.custom_rules = custom_rules or []
+        self.correlation_rules = correlation_rules or []
+        self.freshness_threshold_hours = freshness_threshold_hours
+
+    def score(self, df) -> TableScore:
+        row_count = df.count()
+        r = TableScore(
+            table_name=self.table_name,
+            row_count=row_count,
+            col_count=len(df.columns),
+            engine="pyspark",
+            custom_rules=self.custom_rules,
+        )
+        r.completeness    = self._completeness(df, r, row_count)
+        r.uniqueness      = self._uniqueness(df, r, row_count)
+        r.freshness       = self._freshness(df, r)
+        r.consistency     = self._consistency(df, r, row_count)
+        r.distribution    = self._distribution(df, r)
+        r.validity        = self._validity(df, r, row_count)
+        r.correlation     = self._correlation(df, r, row_count)
+        r.volumetry       = 80.0
+        r.standardization = self._standardization(df, r, row_count)
+        r.global_score    = round(sum(getattr(r, d) * w for d, w in self.WEIGHTS.items()), 1)
+        r.columns         = self._column_scores(df, row_count)
+        return r
+
+    def _completeness(self, df, r, row_count):
+        if row_count == 0: return 0.0
+        null_counts = df.select([
+            F.count(F.when(F.col(c).isNull(), c)).alias(c) for c in df.columns
+        ]).collect()[0].asDict()
+        total_nulls = sum(null_counts.values())
+        for col, nc in null_counts.items():
+            pct = nc / row_count * 100
+            if pct > 20:
+                r.issues.append({"dimension":"completeness",
+                    "severity":"high" if pct > 50 else "medium",
+                    "column":col,"message":f"{pct:.1f}% de valeurs nulles ({nc:,}/{row_count:,})"})
+        return round((1 - total_nulls / (row_count * len(df.columns))) * 100, 1)
+
+    def _uniqueness(self, df, r, row_count):
+        if row_count < 2: return 100.0
+        dup = row_count - df.dropDuplicates().count()
+        pct = dup / row_count * 100
+        if pct > 5:
+            r.issues.append({"dimension":"uniqueness",
+                "severity":"high" if pct > 20 else "medium",
+                "column":"all","message":f"{dup:,} lignes dupliquées ({pct:.1f}%)"})
+        return round(max(0, 100 - pct * 2), 1)
+
+    def _freshness(self, df, r):
+        if not self.date_columns: return 75.0
+        cols = [c for c in self.date_columns if c in df.columns]
+        if not cols: return 75.0
+        max_dates = df.select([F.max(F.to_timestamp(c)).alias(c) for c in cols]).collect()[0].asDict()
+        scores = []; now = datetime.now()
+        for col, max_date in max_dates.items():
+            if not max_date: continue
+            lag = (now - max_date).total_seconds() / 3600
+            scores.append(max(0, 100 - (lag / self.freshness_threshold_hours) * 100))
+            if lag > self.freshness_threshold_hours:
+                r.issues.append({"dimension":"freshness",
+                    "severity":"high" if lag > self.freshness_threshold_hours * 3 else "medium",
+                    "column":col,"message":f"Dernière donnée il y a {lag:.0f}h"})
+        return round(sum(scores) / len(scores), 1) if scores else 75.0
+
+    def _consistency(self, df, r, row_count):
+        v, c = 0, 0
+        num_cols = [f.name for f in df.schema.fields if isinstance(f.dataType,
+            (T.DoubleType, T.FloatType, T.IntegerType, T.LongType))]
+        for col in num_cols:
+            if any(kw in col.lower() for kw in ["price","prix","amount","montant","age","qty","quantity","stock"]):
+                neg = df.filter(F.col(col) < 0).count(); v += neg; c += row_count
+                if neg > 0:
+                    r.issues.append({"dimension":"consistency","severity":"high",
+                        "column":col,"message":f"{neg:,} valeurs négatives"})
+        for rule in self.custom_rules:
+            try:
+                n = df.filter(~F.expr(rule["condition"])).count(); c += row_count; v += n
+                if n > 0:
+                    r.issues.append({"dimension":"consistency",
+                        "severity":rule.get("severity","medium"),
+                        "column":rule.get("column","custom"),
+                        "message":f"Règle '{rule['name']}': {n:,} violations"})
+            except: pass
+        return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
+
+    def _distribution(self, df, r):
+        num_cols = [f.name for f in df.schema.fields if isinstance(f.dataType,
+            (T.DoubleType, T.FloatType, T.IntegerType, T.LongType))]
+        if not num_cols: return 90.0
+        try:
+            quantiles = df.approxQuantile(num_cols, [0.25, 0.75], 0.01)
+        except: return 90.0
+        ratios = []
+        for col, (q1, q3) in zip(num_cols, quantiles):
+            if q1 is None or q3 is None: continue
+            iqr = q3 - q1
+            if iqr == 0: continue
+            out = df.filter((F.col(col) < q1 - 3*iqr) | (F.col(col) > q3 + 3*iqr)).count()
+            total = df.filter(F.col(col).isNotNull()).count()
+            if total == 0: continue
+            ratio = out / total; ratios.append(ratio)
+            if ratio > 0.05:
+                r.issues.append({"dimension":"distribution","severity":"medium",
+                    "column":col,"message":f"{out:,} outliers extrêmes ({ratio*100:.1f}%)"})
+        return 90.0 if not ratios else round(max(0, 100 - (sum(ratios)/len(ratios)) * 500), 1)
+
+    def _validity(self, df, r, row_count):
+        v, c = 0, 0
+        ER = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+        PR = r'^\+?[\d][\d\s\-\.\(\)]{6,20}$'
+        ecols = self.email_columns or [col for col in df.columns if any(kw in col.lower() for kw in ["email","mail"])]
+        for col in ecols:
+            if col not in df.columns: continue
+            nn = df.filter(F.col(col).isNotNull()); total = nn.count()
+            inv = nn.filter(~F.col(col).rlike(ER)).count()
+            c += total; v += inv
+            if inv > 0:
+                pct = inv / total * 100
+                r.issues.append({"dimension":"validity",
+                    "severity":"high" if pct > 20 else "medium",
+                    "column":col,"message":f"{inv:,} emails invalides ({pct:.1f}%)"})
+        pcols = self.phone_columns or [col for col in df.columns if any(kw in col.lower() for kw in ["phone","tel","mobile","gsm"])]
+        for col in pcols:
+            if col not in df.columns: continue
+            nn = df.filter(F.col(col).isNotNull()); total = nn.count()
+            inv = nn.filter(~F.col(col).cast("string").rlike(PR)).count()
+            c += total; v += inv
+            if inv > 0:
+                r.issues.append({"dimension":"validity","severity":"medium",
+                    "column":col,"message":f"{inv:,} numéros invalides"})
+        return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
+
+    def _correlation(self, df, r, row_count):
+        v, c = 0, 0
+        for rule in self.correlation_rules:
+            ca, cb, op = rule.get("col_a"), rule.get("col_b"), rule.get("operator","<")
+            if ca not in df.columns or cb not in df.columns: continue
+            try:
+                both = df.filter(F.col(ca).isNotNull() & F.col(cb).isNotNull())
+                total = both.count(); c += total
+                cond = F.col(ca) >= F.col(cb) if op == "<" else F.col(ca) > F.col(cb)
+                viol = both.filter(cond).count(); v += viol
+                if viol > 0:
+                    rule_name = rule.get("name","")
+                    r.issues.append({"dimension":"correlation",
+                        "severity":rule.get("severity","high"),
+                        "column":f"{ca}/{cb}",
+                        "message":f"{viol:,} violations de '{rule_name}'"})
+            except: pass
+        return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
+
+    def _standardization(self, df, r, row_count):
+        FN = ["n/a","na","null","none","-","--","unknown","inconnu","?","nan","nd"]
+        str_cols = [f.name for f in df.schema.fields if isinstance(f.dataType, T.StringType)]
+        if not str_cols: return 90.0
+        v, c = 0, 0
+        for col in str_cols:
+            nn = df.filter(F.col(col).isNotNull()); total = nn.count()
+            if total == 0: continue
+            c += total
+            sp = nn.filter(F.col(col) != F.trim(F.col(col))).count(); v += sp
+            if sp > 0:
+                r.issues.append({"dimension":"standardization","severity":"low",
+                    "column":col,"message":f"{sp:,} valeurs avec espaces superflus"})
+            fn = nn.filter(F.lower(F.trim(F.col(col))).isin(FN)).count(); v += fn
+            if fn > 0:
+                r.issues.append({"dimension":"standardization","severity":"medium",
+                    "column":col,"message":f"{fn:,} faux nulls (N/A, null, -…)"})
+            nu = nn.select(F.col(col)).distinct().count()
+            nl = nn.select(F.lower(F.trim(F.col(col))).alias(col)).distinct().count()
+            if 2 <= nu <= 50 and nl < nu:
+                v += (nu - nl) * 10
+                r.issues.append({"dimension":"standardization","severity":"medium",
+                    "column":col,"message":f"Casse inconsistante : {nu} variantes pour {nl} valeurs réelles"})
+        return 90.0 if c == 0 else round(max(0, min(100, (1 - v / c) * 100)), 1)
+
+    def _column_scores(self, df, row_count):
+        out = []
+        null_counts = df.select([
+            F.count(F.when(F.col(c).isNull(), c)).alias(c) for c in df.columns
+        ]).collect()[0].asDict()
+        for col in df.columns:
+            nc = null_counts.get(col, 0)
+            cp = round((1 - nc / max(row_count, 1)) * 100, 1)
+            nd = df.agg(F.approx_count_distinct(F.col(col)).alias("n")).collect()[0]["n"]
+            uq = round(nd / max(row_count, 1) * 100, 1)
+            overall = min(round(cp * 0.6 + min(uq * 1.5, 100) * 0.4, 1), 100)
+            out.append(ColumnScore(name=col, completeness=cp, uniqueness=uq, overall=overall))
+        return out
+
+
+# ══════════════════════════════════════════════════════════════
+# FACADE — Point d'entrée unique
+# ══════════════════════════════════════════════════════════════
+
+def run_scoring(
+    df,
+    table_name:               str  = "dataset",
+    custom_rules:             list = None,
+    freshness_threshold_hours: int = 24,
+    spark=None,
+) -> TableScore:
+    """
+    Point d'entrée unique.
+    - df peut être un pandas DataFrame OU un Spark DataFrame
+    - Si spark est fourni ET df est Spark → PySpark engine
+    - Sinon → Pandas engine
+    Auto-détecte les colonnes email/phone/date/corrélation.
+    """
+    custom_rules = custom_rules or []
+
+    # Convertir Spark → pandas si pas de spark fourni
+    if SPARK_AVAILABLE and hasattr(df, "toPandas") and spark is None:
+        df = df.toPandas()
+
+    # Auto-détection sur pandas
+    pdf = df if isinstance(df, pd.DataFrame) else df.toPandas()
+    detected = ColumnAutoDetector().detect(pdf)
+
+    common_args = dict(
+        table_name=table_name,
+        date_columns=detected["date_columns"],
+        email_columns=detected["email_columns"],
+        phone_columns=detected["phone_columns"],
+        correlation_rules=detected["correlation_rules"],
+        custom_rules=custom_rules,
+        freshness_threshold_hours=freshness_threshold_hours,
+    )
+
+    # Choisir l'engine
+    if spark is not None and SPARK_AVAILABLE and not isinstance(df, pd.DataFrame):
+        print(f"[DQ] Engine : PySpark (distribué)")
+        scorer = PySparkScorer(spark=spark, **common_args)
+        return scorer.score(df)
+    else:
+        print(f"[DQ] Engine : Pandas")
+        scorer = PandasScorer(**common_args)
+        pdf_df = df if isinstance(df, pd.DataFrame) else df.toPandas()
+        return scorer.score(pdf_df)
+
 
 # ══════════════════════════════════════════════════════════════
 # CONFIG
@@ -747,7 +1422,8 @@ def load_data(source, **kw) -> pd.DataFrame:
 for k,v in [("step",1),("df",None),("result",None),("rules",[]),
             ("source_name","dataset"),("source_type","upload"),
             ("freshness_h",24),("alert_t",70),
-            ("dbx_enabled",False),("dbx_workspace",""),("dbx_token",""),("dbx_cluster","")]:
+            ("dbx_enabled",False),("dbx_workspace",""),("dbx_token",""),("dbx_cluster",""),
+            ("admin_mode",False)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -757,29 +1433,272 @@ for k,v in [("step",1),("df",None),("result",None),("rules",[]),
 # ══════════════════════════════════════════════════════════════
 
 if not auth.is_logged_in(st.session_state):
-    st.markdown("""
-    <div class="login-wrap">
-      <div class="login-logo">
-        <div class="login-logo-icon">⬡</div>
-        <div class="login-title">DataQuality Agent</div>
-        <div class="login-sub">Connectez-vous pour accéder à l'outil</div>
+
+    # Détecter le mode admin (?admin dans l'URL ou bouton discret)
+    params = st.query_params
+    if params.get("admin") == "1":
+        st.session_state.admin_mode = True
+
+    if st.session_state.admin_mode:
+        # ── ÉCRAN LOGIN ADMIN ──────────────────────────────────
+        st.markdown("""
+        <div class="login-wrap">
+          <div class="login-logo">
+            <div class="login-logo-icon" style="background:#DC2626;">🔐</div>
+            <div class="login-title">Administration</div>
+            <div class="login-sub">Accès réservé aux administrateurs</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        c1,c2,c3 = st.columns([1,1.4,1])
+        with c2:
+            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            adm_user = st.text_input("Identifiant admin", placeholder="admin", key="adm_u")
+            adm_pass = st.text_input("Mot de passe", type="password", key="adm_p")
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Accéder à l'admin", type="primary", width='stretch'):
+                user = auth.verify_login(adm_user, adm_pass)
+                if user and user.get("role") == "admin":
+                    st.session_state["user"] = user
+                    st.rerun()
+                elif user:
+                    st.markdown('<div class="alert alert-err">⛔ Compte non administrateur.</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="alert alert-err">❌ Identifiant ou mot de passe incorrect.</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            if st.button("← Retour au login client", key="back_login"):
+                st.session_state.admin_mode = False
+                st.query_params.clear()
+                st.rerun()
+        st.stop()
+
+    else:
+        # ── ÉCRAN LOGIN CLIENT ─────────────────────────────────
+        st.markdown("""
+        <div class="login-wrap">
+          <div class="login-logo">
+            <div class="login-logo-icon">⬡</div>
+            <div class="login-title">DataQuality Agent</div>
+            <div class="login-sub">Connectez-vous pour accéder à l'outil</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        c1,c2,c3 = st.columns([1,1.4,1])
+        with c2:
+            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            username = st.text_input("Identifiant", placeholder="votre identifiant")
+            password = st.text_input("Mot de passe", type="password", placeholder="••••••••")
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Se connecter", type="primary", width='stretch'):
+                if auth.login(st.session_state, username, password):
+                    st.rerun()
+                else:
+                    st.markdown('<div class="alert alert-err">Identifiant ou mot de passe incorrect.</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            # Lien admin discret en bas — invisible pour un client qui ne sait pas
+            st.markdown("""
+            <div style="text-align:center;margin-top:16px;">
+              <span style="color:var(--dim);font-size:0.72rem;">Accès sur invitation · DataQuality Agent v3</span>
+            </div>
+            <div style="text-align:center;margin-top:32px;">
+              <a href="?admin=1" style="color:var(--border2);font-size:0.6rem;
+                 text-decoration:none;letter-spacing:1px;">· · ·</a>
+            </div>
+            """, unsafe_allow_html=True)
+        st.stop()
+
+
+# ══════════════════════════════════════════════════════════════
+# PAGE ADMIN (si connecté en tant qu'admin via ?admin=1)
+# ══════════════════════════════════════════════════════════════
+
+user = auth.get_current_user(st.session_state)
+
+if st.session_state.get("admin_mode") and user and user.get("role") == "admin":
+
+    def _gen_pwd(n=12):
+        chars = string.ascii_letters + string.digits + "!@#$"
+        return ''.join(secrets_mod.choice(chars) for _ in range(n))
+
+    def _fmt_date(s):
+        if not s: return "—"
+        try:
+            from datetime import datetime as _dt
+            return _dt.fromisoformat(s).strftime("%d/%m/%Y %H:%M")
+        except: return s
+
+    users_list = auth.list_users()
+    clients_l  = [u for u in users_list if u["role"] == "client"]
+    admins_l   = [u for u in users_list if u["role"] == "admin"]
+    actifs_l   = [u for u in users_list if u.get("last_login")]
+
+    # NAV admin
+    st.markdown(f"""
+    <div class="topnav" style="border-bottom:2px solid #FECACA;">
+      <div class="brand">
+        <div class="brand-icon" style="background:#DC2626;">🔐</div>
+        <div>
+          <div class="brand-name">DataQuality Agent</div>
+          <div class="brand-tag">Administration</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="background:#FEF2F2;border:1px solid #FECACA;border-radius:20px;
+          padding:4px 12px;font-size:0.65rem;font-weight:700;color:#DC2626;
+          font-family:'JetBrains Mono',monospace;">ADMIN</span>
+        <span class="user-pill">👤 {user['username']}</span>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    c1,c2,c3 = st.columns([1,1.4,1])
-    with c2:
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        username = st.text_input("Identifiant", placeholder="votre identifiant")
-        password = st.text_input("Mot de passe", type="password", placeholder="••••••••")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Stats
+    st.markdown(f"""
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:28px;">
+      <div style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+        <div style="font-family:'Instrument Serif',serif;font-size:2rem;">{len(users_list)}</div>
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;">Comptes total</div>
+      </div>
+      <div style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+        <div style="font-family:'Instrument Serif',serif;font-size:2rem;color:var(--accent2);">{len(clients_l)}</div>
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;">Clients</div>
+      </div>
+      <div style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+        <div style="font-family:'Instrument Serif',serif;font-size:2rem;color:var(--ok);">{len(actifs_l)}</div>
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;">Ont connecté</div>
+      </div>
+      <div style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+        <div style="font-family:'Instrument Serif',serif;font-size:2rem;color:var(--danger);">{len(admins_l)}</div>
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;">Admins</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_main, col_side = st.columns([2.2, 1])
+
+    with col_main:
+        st.markdown('<div class="card-label">Comptes utilisateurs</div>', unsafe_allow_html=True)
+
+        # Tableau des comptes
+        rows = ""
+        for u in sorted(users_list, key=lambda x: x.get("last_login") or "", reverse=True):
+            role_color = "#DC2626" if u["role"]=="admin" else "var(--accent2)"
+            role_bg    = "#FEF2F2" if u["role"]=="admin" else "var(--accent-l)"
+            role_border= "#FECACA" if u["role"]=="admin" else "#C7D2FE"
+            dot = '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:5px;"></span>' if u.get("last_login") else ""
+            status = f"{dot}Actif" if u.get("last_login") else '<span style="color:var(--dim);">Jamais connecté</span>'
+            rows += f"""<tr>
+              <td><strong>{u['username']}</strong></td>
+              <td><span style="background:{role_bg};border:1px solid {role_border};color:{role_color};
+                border-radius:20px;padding:2px 10px;font-size:0.62rem;font-weight:700;
+                font-family:'JetBrains Mono',monospace;">{u['role'].upper()}</span></td>
+              <td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;">{_fmt_date(u.get('last_login'))}</td>
+              <td>{status}</td>
+            </tr>"""
+
+        st.markdown(f"""
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="background:var(--surface2);padding:10px 14px;text-align:left;font-size:0.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border);">Utilisateur</th>
+              <th style="background:var(--surface2);padding:10px 14px;text-align:left;font-size:0.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border);">Rôle</th>
+              <th style="background:var(--surface2);padding:10px 14px;text-align:left;font-size:0.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border);">Dernière connexion</th>
+              <th style="background:var(--surface2);padding:10px 14px;text-align:left;font-size:0.7rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border);">Statut</th>
+            </tr>
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>
+        """, unsafe_allow_html=True)
+
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Se connecter", type="primary", width='stretch'):
-            if auth.login(st.session_state, username, password):
-                st.rerun()
+        st.markdown('<div class="card-label">Actions</div>', unsafe_allow_html=True)
+        tab1, tab2, tab3 = st.tabs(["🗑 Supprimer", "🔑 Réinitialiser mot de passe", "👑 Changer rôle"])
+
+        with tab1:
+            deletable = [u["username"] for u in users_list if u["username"] != user["username"]]
+            if deletable:
+                del_u = st.selectbox("Compte à supprimer", deletable, key="del_u")
+                if st.button("🗑 Confirmer suppression", type="primary"):
+                    if auth.delete_user(del_u):
+                        st.markdown(f'<div class="alert alert-ok">✅ {del_u} supprimé.</div>', unsafe_allow_html=True)
+                        st.rerun()
             else:
-                st.markdown('<div class="alert alert-err">Identifiant ou mot de passe incorrect.</div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown('<div style="text-align:center;color:var(--dim);font-size:0.72rem;margin-top:16px;">Accès sur invitation · DataQuality Agent v3</div>', unsafe_allow_html=True)
+                st.markdown('<div class="alert alert-info">Aucun compte à supprimer.</div>', unsafe_allow_html=True)
+
+        with tab2:
+            reset_u   = st.selectbox("Compte", [u["username"] for u in users_list], key="rst_u")
+            manual_p  = st.text_input("Nouveau mot de passe (vide = auto)", type="password", key="rst_p")
+            if st.button("🔑 Réinitialiser", type="primary"):
+                new_p = manual_p or _gen_pwd()
+                if auth.change_password(reset_u, new_p):
+                    st.markdown(f'<div class="alert alert-ok">✅ Mot de passe réinitialisé pour <strong>{reset_u}</strong></div>', unsafe_allow_html=True)
+                    if not manual_p:
+                        st.markdown('<div style="background:#1C1917;border-radius:10px;padding:14px;font-family:JetBrains Mono,monospace;font-size:1rem;color:#34D399;text-align:center;letter-spacing:2px;">' + str(new_p) + '</div>', unsafe_allow_html=True)
+
+        with tab3:
+            other_users = [u["username"] for u in users_list if u["username"] != user["username"]]
+            if other_users:
+                role_u = st.selectbox("Compte", other_users, key="role_u")
+                cur_role = next((u["role"] for u in users_list if u["username"]==role_u), "client")
+                new_role_val = st.selectbox("Nouveau rôle", ["client","admin"],
+                               index=0 if cur_role=="client" else 1, key="role_v")
+                if st.button("💾 Changer", type="primary"):
+                    all_u = auth._load_users()
+                    all_u[role_u]["role"] = new_role_val
+                    auth._save_users(all_u)
+                    st.markdown(f'<div class="alert alert-ok">✅ {role_u} → {new_role_val}</div>', unsafe_allow_html=True)
+                    st.rerun()
+
+    with col_side:
+        st.markdown('<div class="card-label">Créer un compte</div>', unsafe_allow_html=True)
+        with st.container():
+            new_u    = st.text_input("Identifiant", placeholder="prenom.nom", key="new_u")
+            new_r    = st.selectbox("Rôle", ["client","admin"], key="new_r")
+            auto_p   = st.checkbox("Générer mot de passe auto", value=True, key="auto_p")
+            manual_np = "" if auto_p else st.text_input("Mot de passe", type="password", key="mnl_p")
+            if st.button("➕ Créer", type="primary", width='stretch'):
+                if not new_u:
+                    st.markdown('<div class="alert alert-err">Identifiant requis.</div>', unsafe_allow_html=True)
+                elif auth.user_exists(new_u):
+                    st.markdown(f'<div class="alert alert-err">{new_u} existe déjà.</div>', unsafe_allow_html=True)
+                else:
+                    pwd = _gen_pwd() if auto_p else manual_np
+                    if pwd:
+                        auth.create_user(new_u, pwd, role=new_r)
+                        st.markdown(f'<div class="alert alert-ok">✅ Compte <strong>{new_u}</strong> créé !</div>', unsafe_allow_html=True)
+                        if auto_p:
+                            st.markdown('<div style="background:#1C1917;border-radius:10px;padding:14px 18px;font-family:JetBrains Mono,monospace;font-size:1.1rem;color:#34D399;letter-spacing:3px;text-align:center;margin:8px 0;">' + str(pwd) + '</div>', unsafe_allow_html=True)
+                            st.markdown('<div style="text-align:center;font-size:0.72rem;color:var(--muted);">Transmettez ce mot de passe au client</div>', unsafe_allow_html=True)
+                        st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="card-label">Email invitation</div>', unsafe_allow_html=True)
+        app_url_admin = st.text_input("URL app", value="https://ton-app.streamlit.app", key="app_url_a")
+        inv_user = st.text_input("Identifiant client", key="inv_u")
+        if st.button("📋 Générer email", width='stretch'):
+            if inv_user:
+                tpl = f"""Objet : Votre accès DataQuality Agent
+
+Bonjour,
+
+Votre accès est prêt.
+
+🔗 {app_url_admin}
+👤 Identifiant : {inv_user}
+🔑 Mot de passe : [voir séparément]
+
+Cordialement,
+DataQuality Agent"""
+                st.text_area("", value=tpl, height=200, key="email_tpl")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🚪 Déconnexion admin", width='stretch'):
+            auth.logout(st.session_state)
+            st.session_state.admin_mode = False
+            st.query_params.clear()
+            st.rerun()
+
     st.stop()
 
 
@@ -787,7 +1706,6 @@ if not auth.is_logged_in(st.session_state):
 # UTILISATEUR CONNECTÉ — NAV
 # ══════════════════════════════════════════════════════════════
 
-user = auth.get_current_user(st.session_state)
 step = st.session_state.step
 
 labels = ["Source","Règles","Analyse","Rapport"]
@@ -929,79 +1847,19 @@ if step == 1:
         ("🐘","PostgreSQL / MySQL","Host + requête SQL","postgres"),
     ]
 
-    # ── CSS : transformer st.radio en cartes visuelles ───────────
-    st.markdown("""
-    <style>
-    /* Masquer le label du radio group */
-    div[data-testid="stRadio"] > label { display:none !important; }
-
-    /* Container radio = grille 3 colonnes */
-    div[data-testid="stRadio"] > div[role="radiogroup"] {
-      display:grid !important;
-      grid-template-columns:repeat(3,1fr) !important;
-      gap:10px !important;
-    }
-
-    /* Chaque option = une carte */
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label {
-      display:flex !important;
-      flex-direction:column !important;
-      align-items:center !important;
-      justify-content:center !important;
-      background:#FFFFFF !important;
-      border:1.5px solid #E8E6E0 !important;
-      border-radius:14px !important;
-      padding:20px 12px !important;
-      cursor:pointer !important;
-      transition:all .18s !important;
-      box-shadow:0 1px 4px rgba(0,0,0,0.04) !important;
-      min-height:90px !important;
-    }
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
-      border-color:#4F46E5 !important;
-      transform:translateY(-2px) !important;
-      box-shadow:0 6px 20px rgba(55,48,163,0.1) !important;
-    }
-
-    /* Option sélectionnée */
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-baseweb="radio"]:has(input:checked),
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
-      border-color:#4F46E5 !important;
-      background:#EEF2FF !important;
-      box-shadow:0 4px 16px rgba(55,48,163,0.12) !important;
-    }
-
-    /* Masquer le rond radio natif */
-    div[data-testid="stRadio"] input[type="radio"] { display:none !important; }
-    div[data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {
-      font-family:"Cabinet Grotesk",sans-serif !important;
-      font-size:0.82rem !important;
-      font-weight:600 !important;
-      color:#1C1917 !important;
-      text-align:center !important;
-      margin:0 !important;
-      line-height:1.5 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    src_labels  = [f"{icon}\n**{name}**\n{desc}" for icon,name,desc,_ in sources]
-    src_keys    = [key for _,_,_,key in sources]
-    src_display = [f"{icon}  {name}" for icon,name,_,_ in sources]
-
-    current_idx = src_keys.index(st.session_state.source_type) if st.session_state.source_type in src_keys else 0
-
-    chosen = st.radio(
-        "source",
-        options=src_keys,
-        format_func=lambda k: next(f"{ic}  {n}\n{d}" for ic,n,d,key in sources if key==k),
-        index=current_idx,
-        horizontal=False,
-        label_visibility="collapsed",
-    )
-    if chosen != st.session_state.source_type:
-        st.session_state.source_type = chosen
-        st.rerun()
+    sel = st.session_state.source_type
+    cols6 = st.columns(3)
+    for i,(icon,name,desc,key) in enumerate(sources):
+        with cols6[i%3]:
+            selected = "selected" if sel == key else ""
+            st.markdown(f"""
+            <div class="src-card {selected}">
+              <div class="src-icon">{icon}</div>
+              <div class="src-name">{name}</div>
+              <div class="src-desc">{desc}</div>
+            </div>""", unsafe_allow_html=True)
+            if st.button("Sélectionner", key=f"src_{key}", use_container_width=True):
+                st.session_state.source_type = key; st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
     src  = st.session_state.source_type
