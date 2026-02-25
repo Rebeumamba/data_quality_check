@@ -196,16 +196,54 @@ class PandasScorer:
                 neg = (df[col] < 0).sum(); v += neg; c += len(df)
                 if neg > 0:
                     r.issues.append({"dimension":"consistency","severity":"high",
-                        "column":col,"message":f"{neg:,} valeurs négatives"})
+                        "column":col,"message":f"{neg:,} valeurs negatives"})
         for rule in self.custom_rules:
+            col_name = rule.get("column","")
+            rule_op  = rule.get("operator","")
+            rule_val = rule.get("value","")
             try:
-                n = (~df.eval(rule["condition"])).sum(); c += len(df); v += n
+                # Strategie 1 : df.eval() direct
+                n = (~df.eval(rule["condition"])).sum()
+                c += len(df); v += n
                 if n > 0:
                     r.issues.append({"dimension":"consistency",
                         "severity":rule.get("severity","medium"),
-                        "column":rule.get("column","custom"),
-                        "message":f"Règle '{rule['name']}': {n:,} violations"})
-            except: pass
+                        "column":col_name or "custom",
+                        "message":f"Regle {rule['name']}: {n:,} violations"})
+            except Exception:
+                try:
+                    # Strategie 2 : renommer colonnes pour eval() (espaces, tirets...)
+                    col_map = {c2: re.sub(r"[^a-zA-Z0-9_]", "_", c2) for c2 in df.columns}
+                    safe_df = df.rename(columns=col_map)
+                    safe_cond = rule["condition"]
+                    for orig, safe in sorted(col_map.items(), key=lambda x: -len(x[0])):
+                        safe_cond = safe_cond.replace(f"", safe).replace(orig, safe)
+                    n = (~safe_df.eval(safe_cond)).sum()
+                    c += len(df); v += n
+                    if n > 0:
+                        r.issues.append({"dimension":"consistency",
+                            "severity":rule.get("severity","medium"),
+                            "column":col_name or "custom",
+                            "message":f"Regle {rule['name']}: {n:,} violations"})
+                except Exception:
+                    try:
+                        # Strategie 3 : evaluation directe pandas (fallback)
+                        if col_name and col_name in df.columns and rule_op:
+                            s = pd.to_numeric(df[col_name], errors="coerce")
+                            val_f = float(rule_val)
+                            ops = {">": s>val_f, ">=": s>=val_f, "<": s<val_f,
+                                   "<=": s<=val_f, "==": s==val_f, "!=": s!=val_f}
+                            if rule_op in ops:
+                                n = (~ops[rule_op]).sum(); c += len(df); v += n
+                                if n > 0:
+                                    r.issues.append({"dimension":"consistency",
+                                        "severity":rule.get("severity","medium"),
+                                        "column":col_name,
+                                        "message":f"Regle {rule['name']}: {n:,} violations"})
+                    except Exception:
+                        r.issues.append({"dimension":"consistency","severity":"low",
+                            "column":col_name or "?",
+                            "message":f"Regle non applicable sur ce dataset: {rule['name']}"})
         return 90.0 if c == 0 else round(max(0, (1 - v / c) * 100), 1)
 
     def _distribution(self, df, r):
