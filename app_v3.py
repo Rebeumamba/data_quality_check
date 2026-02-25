@@ -929,29 +929,79 @@ if step == 1:
         ("🐘","PostgreSQL / MySQL","Host + requête SQL","postgres"),
     ]
 
-    # CSS global pour masquer les boutons "Sélectionner" sous les cartes
+    # ── CSS : transformer st.radio en cartes visuelles ───────────
     st.markdown("""
     <style>
-    .src-btn-wrap { position:relative; margin-top:-88px; z-index:10; opacity:0; height:88px; }
-    .src-btn-wrap button { height:88px !important; width:100% !important; cursor:pointer !important; }
+    /* Masquer le label du radio group */
+    div[data-testid="stRadio"] > label { display:none !important; }
+
+    /* Container radio = grille 3 colonnes */
+    div[data-testid="stRadio"] > div[role="radiogroup"] {
+      display:grid !important;
+      grid-template-columns:repeat(3,1fr) !important;
+      gap:10px !important;
+    }
+
+    /* Chaque option = une carte */
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+      display:flex !important;
+      flex-direction:column !important;
+      align-items:center !important;
+      justify-content:center !important;
+      background:#FFFFFF !important;
+      border:1.5px solid #E8E6E0 !important;
+      border-radius:14px !important;
+      padding:20px 12px !important;
+      cursor:pointer !important;
+      transition:all .18s !important;
+      box-shadow:0 1px 4px rgba(0,0,0,0.04) !important;
+      min-height:90px !important;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
+      border-color:#4F46E5 !important;
+      transform:translateY(-2px) !important;
+      box-shadow:0 6px 20px rgba(55,48,163,0.1) !important;
+    }
+
+    /* Option sélectionnée */
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-baseweb="radio"]:has(input:checked),
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+      border-color:#4F46E5 !important;
+      background:#EEF2FF !important;
+      box-shadow:0 4px 16px rgba(55,48,163,0.12) !important;
+    }
+
+    /* Masquer le rond radio natif */
+    div[data-testid="stRadio"] input[type="radio"] { display:none !important; }
+    div[data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {
+      font-family:"Cabinet Grotesk",sans-serif !important;
+      font-size:0.82rem !important;
+      font-weight:600 !important;
+      color:#1C1917 !important;
+      text-align:center !important;
+      margin:0 !important;
+      line-height:1.5 !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-    sel = st.session_state.source_type
-    cols6 = st.columns(3)
-    for i,(icon,name,desc,key) in enumerate(sources):
-        with cols6[i%3]:
-            selected = "selected" if sel == key else ""
-            st.markdown(f"""
-            <div class="src-card {selected}">
-              <div class="src-icon">{icon}</div>
-              <div class="src-name">{name}</div>
-              <div class="src-desc">{desc}</div>
-            </div>
-            <div class="src-btn-wrap">""", unsafe_allow_html=True)
-            if st.button("x", key=f"src_{key}", help=f"Sélectionner {name}"):
-                st.session_state.source_type = key; st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+    src_labels  = [f"{icon}\n**{name}**\n{desc}" for icon,name,desc,_ in sources]
+    src_keys    = [key for _,_,_,key in sources]
+    src_display = [f"{icon}  {name}" for icon,name,_,_ in sources]
+
+    current_idx = src_keys.index(st.session_state.source_type) if st.session_state.source_type in src_keys else 0
+
+    chosen = st.radio(
+        "source",
+        options=src_keys,
+        format_func=lambda k: next(f"{ic}  {n}\n{d}" for ic,n,d,key in sources if key==k),
+        index=current_idx,
+        horizontal=False,
+        label_visibility="collapsed",
+    )
+    if chosen != st.session_state.source_type:
+        st.session_state.source_type = chosen
+        st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
     src  = st.session_state.source_type
