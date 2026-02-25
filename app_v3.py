@@ -203,9 +203,10 @@ section[data-testid="stSidebar"] { display:none; }
 /* ── SOURCE CARDS ── */
 .src-card {
   background:var(--surface); border:1.5px solid var(--border);
-  border-radius:14px; padding:18px 14px;
+  border-radius:14px; padding:20px 14px;
   text-align:center; transition:all .18s;
   box-shadow:0 1px 4px rgba(0,0,0,0.04);
+  cursor:pointer; position:relative;
 }
 .src-card:hover {
   border-color:var(--accent2); transform:translateY(-2px);
@@ -216,12 +217,44 @@ section[data-testid="stSidebar"] { display:none; }
   background:var(--accent-l);
   box-shadow:0 4px 16px rgba(55,48,163,0.12);
 }
-.src-icon { font-size:1.7rem; margin-bottom:7px; }
+.src-card.selected::after {
+  content:"✓";
+  position:absolute; top:8px; right:10px;
+  width:18px; height:18px; border-radius:50%;
+  background:var(--accent2); color:white;
+  font-size:0.6rem; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+  line-height:18px;
+}
+.src-icon { font-size:1.8rem; margin-bottom:8px; }
 .src-name {
   font-family:'Cabinet Grotesk',sans-serif;
-  font-size:0.82rem; font-weight:700; color:var(--text);
+  font-size:0.83rem; font-weight:700; color:var(--text);
 }
 .src-desc { font-size:0.67rem; color:var(--muted); margin-top:2px; }
+
+/* HELP BOX */
+.help-box {
+  background:linear-gradient(135deg,#EFF6FF,#EEF2FF);
+  border:1.5px solid #BFDBFE; border-radius:12px;
+  padding:16px 18px; margin-bottom:20px;
+}
+.help-box-title {
+  font-family:'Cabinet Grotesk',sans-serif;
+  font-weight:700; font-size:0.85rem; color:#1E40AF;
+  display:flex; align-items:center; gap:7px; margin-bottom:8px;
+}
+.help-box-body { font-size:0.78rem; color:#3730A3; line-height:1.6; }
+.help-box-body code {
+  background:rgba(55,48,163,0.1); padding:1px 5px;
+  border-radius:3px; font-family:'JetBrains Mono',monospace;
+  font-size:0.72rem;
+}
+.help-example {
+  background:white; border:1px solid #BFDBFE;
+  border-radius:8px; padding:10px 14px; margin-top:10px;
+  font-family:'JetBrains Mono',monospace; font-size:0.7rem; color:#1E40AF;
+}
 
 /* ── DATABRICKS BLOCK ── */
 .dbx-card {
@@ -776,111 +809,6 @@ if step == 1:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="card-label">Source de données</div>', unsafe_allow_html=True)
-
-    sources = [
-        ("📁","CSV / Excel","Upload direct","upload"),
-        ("🔗","URL / Drive","Lien public CSV","url"),
-        ("🟠","Amazon S3","Bucket + credentials","s3"),
-        ("🟦","Azure Blob","Connection string","azure"),
-        ("🟡","Google Cloud","GCS + service account","gcs"),
-        ("🐘","PostgreSQL / MySQL","Host + requête SQL","postgres"),
-    ]
-
-    sel = st.session_state.source_type
-    cols6 = st.columns(3)
-    for i,(icon,name,desc,key) in enumerate(sources):
-        with cols6[i%3]:
-            selected = "selected" if sel == key else ""
-            st.markdown(f"""
-            <div class="src-card {selected}">
-              <div class="src-icon">{icon}</div>
-              <div class="src-name">{name}</div>
-              <div class="src-desc">{desc}</div>
-            </div>""", unsafe_allow_html=True)
-            if st.button("Sélectionner", key=f"src_{key}", width='stretch'):
-                st.session_state.source_type = key; st.rerun()
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    src  = st.session_state.source_type
-    df   = None
-
-    if src == "upload":
-        st.markdown('<div class="card-label">📁 Upload fichier</div>', unsafe_allow_html=True)
-        f = st.file_uploader("Fichier", type=["csv","xlsx","xls"], label_visibility="collapsed")
-        if f:
-            with st.spinner("Lecture…"):
-                try:
-                    df = load_data("upload", file=f)
-                    st.session_state.source_name = f.name
-                    st.session_state.df = df
-                except Exception as e:
-                    st.error(f"Erreur : {e}")
-
-    elif src == "url":
-        st.markdown('<div class="card-label">🔗 URL publique</div>', unsafe_allow_html=True)
-        url = st.text_input("URL du fichier CSV", placeholder="https://… ou https://drive.google.com/uc?id=…")
-        if st.button("Charger", type="primary") and url:
-            with st.spinner("Chargement…"):
-                try:
-                    df = load_data("url", url=url)
-                    st.session_state.source_name = url.split("/")[-1] or "url_dataset"
-                except Exception as e:
-                    st.error(f"Erreur : {e}")
-
-    elif src == "s3":
-        st.markdown('<div class="card-label">🟠 Amazon S3</div>', unsafe_allow_html=True)
-        c1,c2 = st.columns(2)
-        bucket=c1.text_input("Bucket"); path=c2.text_input("Chemin fichier")
-        key=st.text_input("Access Key ID",type="password"); secret=st.text_input("Secret Access Key",type="password")
-        region=st.text_input("Région",value="eu-west-1")
-        if st.button("Connecter S3",type="primary"):
-            with st.spinner("Connexion S3…"):
-                try:
-                    df=load_data("s3",bucket=bucket,path=path,key=key,secret=secret,region=region)
-                    st.session_state.source_name=path.split("/")[-1]
-                except Exception as e: st.error(f"Erreur S3 : {e}")
-
-    elif src == "azure":
-        st.markdown('<div class="card-label">🟦 Azure Blob</div>', unsafe_allow_html=True)
-        conn=st.text_input("Connection String",type="password")
-        c1,c2=st.columns(2); cont=c1.text_input("Container"); blob=c2.text_input("Blob")
-        if st.button("Connecter Azure",type="primary"):
-            with st.spinner("Connexion Azure…"):
-                try:
-                    df=load_data("azure",conn=conn,container=cont,blob=blob)
-                    st.session_state.source_name=blob.split("/")[-1]
-                except Exception as e: st.error(f"Erreur Azure : {e}")
-
-    elif src == "gcs":
-        st.markdown('<div class="card-label">🟡 Google Cloud Storage</div>', unsafe_allow_html=True)
-        c1,c2=st.columns(2); bkt=c1.text_input("Bucket"); blb=c2.text_input("Chemin fichier")
-        creds=st.text_area("Service Account JSON",height=80)
-        if st.button("Connecter GCS",type="primary"):
-            with st.spinner("Connexion GCS…"):
-                try:
-                    df=load_data("gcs",bucket=bkt,path=blb,creds=creds)
-                    st.session_state.source_name=blb.split("/")[-1]
-                except Exception as e: st.error(f"Erreur GCS : {e}")
-
-    elif src == "postgres":
-        st.markdown('<div class="card-label">🐘 PostgreSQL / MySQL</div>', unsafe_allow_html=True)
-        db_type = st.selectbox("Base de données", ["PostgreSQL","MySQL"])
-        c1,c2,c3=st.columns([3,1,1])
-        host=c1.text_input("Host",placeholder="localhost")
-        port=c2.text_input("Port",value="5432" if db_type=="PostgreSQL" else "3306")
-        db=c3.text_input("Base")
-        c4,c5=st.columns(2)
-        user=c4.text_input("Utilisateur"); pwd=c5.text_input("Mot de passe",type="password")
-        query=st.text_area("Requête SQL",value="SELECT * FROM ma_table LIMIT 50000",height=68)
-        src_key = "postgres" if db_type == "PostgreSQL" else "mysql"
-        if st.button(f"Connecter {db_type}",type="primary"):
-            with st.spinner("Connexion…"):
-                try:
-                    df=load_data(src_key,host=host,port=port,db=db,user=user,password=pwd,query=query)
-                    st.session_state.source_name=f"{db_type.lower()}_query"
-                except Exception as e: st.error(f"Erreur {db_type} : {e}")
-
     # ── Connexion Databricks (optionnel) ──────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('''
@@ -957,6 +885,118 @@ if step == 1:
     else:
         st.markdown('<div class="alert alert-info" style="font-size:0.78rem;">ℹ️ Mode Pandas — fonctionne sans Databricks. Limite recommandée : 5M lignes.</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="card-label">Source de données</div>', unsafe_allow_html=True)
+
+    sources = [
+        ("📁","CSV / Excel","Upload direct","upload"),
+        ("🔗","URL / Drive","Lien public CSV","url"),
+        ("🟠","Amazon S3","Bucket + credentials","s3"),
+        ("🟦","Azure Blob","Connection string","azure"),
+        ("🟡","Google Cloud","GCS + service account","gcs"),
+        ("🐘","PostgreSQL / MySQL","Host + requête SQL","postgres"),
+    ]
+
+    sel = st.session_state.source_type
+    cols6 = st.columns(3)
+    for i,(icon,name,desc,key) in enumerate(sources):
+        with cols6[i%3]:
+            selected = "selected" if sel == key else ""
+            # Carte cliquable via bouton Streamlit stylé en overlay invisible
+            st.markdown(f"""
+            <div class="src-card {selected}" id="card_{key}">
+              <div class="src-icon">{icon}</div>
+              <div class="src-name">{name}</div>
+              <div class="src-desc">{desc}</div>
+            </div>""", unsafe_allow_html=True)
+            # Bouton caché sous la carte via CSS inline
+            st.markdown(f"""
+            <style>
+            div[data-testid="stButton"]:has(button[kind="secondary"]#btn_{key}) {{
+              position:relative; margin-top:-72px; opacity:0; height:72px;
+            }}
+            </style>""", unsafe_allow_html=True)
+            if st.button(" ", key=f"src_{key}", help=f"Sélectionner {name}"):
+                st.session_state.source_type = key; st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    src  = st.session_state.source_type
+    df   = None
+
+    if src == "upload":
+        st.markdown('<div class="card-label">📁 Upload fichier</div>', unsafe_allow_html=True)
+        f = st.file_uploader("Fichier", type=["csv","xlsx","xls"], label_visibility="collapsed")
+        if f:
+            with st.spinner("Lecture…"):
+                try:
+                    df = load_data("upload", file=f)
+                    st.session_state.source_name = f.name
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
+
+    elif src == "url":
+        st.markdown('<div class="card-label">🔗 URL publique</div>', unsafe_allow_html=True)
+        url = st.text_input("URL du fichier CSV", placeholder="https://… ou https://drive.google.com/uc?id=…")
+        if st.button("Charger", type="primary") and url:
+            with st.spinner("Chargement…"):
+                try:
+                    df = load_data("url", url=url)
+                    st.session_state.source_name = url.split("/")[-1] or "url_dataset"
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
+
+    elif src == "s3":
+        st.markdown('<div class="card-label">🟠 Amazon S3</div>', unsafe_allow_html=True)
+        c1,c2 = st.columns(2)
+        bucket=c1.text_input("Bucket"); path=c2.text_input("Chemin fichier")
+        key=st.text_input("Access Key ID",type="password"); secret=st.text_input("Secret Access Key",type="password")
+        region=st.text_input("Région",value="eu-west-1")
+        if st.button("Connecter S3",type="primary"):
+            with st.spinner("Connexion S3…"):
+                try:
+                    df=load_data("s3",bucket=bucket,path=path,key=key,secret=secret,region=region)
+                    st.session_state.source_name=path.split("/")[-1]
+                except Exception as e: st.error(f"Erreur S3 : {e}")
+
+    elif src == "azure":
+        st.markdown('<div class="card-label">🟦 Azure Blob</div>', unsafe_allow_html=True)
+        conn=st.text_input("Connection String",type="password")
+        c1,c2=st.columns(2); cont=c1.text_input("Container"); blob=c2.text_input("Blob")
+        if st.button("Connecter Azure",type="primary"):
+            with st.spinner("Connexion Azure…"):
+                try:
+                    df=load_data("azure",conn=conn,container=cont,blob=blob)
+                    st.session_state.source_name=blob.split("/")[-1]
+                except Exception as e: st.error(f"Erreur Azure : {e}")
+
+    elif src == "gcs":
+        st.markdown('<div class="card-label">🟡 Google Cloud Storage</div>', unsafe_allow_html=True)
+        c1,c2=st.columns(2); bkt=c1.text_input("Bucket"); blb=c2.text_input("Chemin fichier")
+        creds=st.text_area("Service Account JSON",height=80)
+        if st.button("Connecter GCS",type="primary"):
+            with st.spinner("Connexion GCS…"):
+                try:
+                    df=load_data("gcs",bucket=bkt,path=blb,creds=creds)
+                    st.session_state.source_name=blb.split("/")[-1]
+                except Exception as e: st.error(f"Erreur GCS : {e}")
+
+    elif src == "postgres":
+        st.markdown('<div class="card-label">🐘 PostgreSQL / MySQL</div>', unsafe_allow_html=True)
+        db_type = st.selectbox("Base de données", ["PostgreSQL","MySQL"])
+        c1,c2,c3=st.columns([3,1,1])
+        host=c1.text_input("Host",placeholder="localhost")
+        port=c2.text_input("Port",value="5432" if db_type=="PostgreSQL" else "3306")
+        db=c3.text_input("Base")
+        c4,c5=st.columns(2)
+        user=c4.text_input("Utilisateur"); pwd=c5.text_input("Mot de passe",type="password")
+        query=st.text_area("Requête SQL",value="SELECT * FROM ma_table LIMIT 50000",height=68)
+        src_key = "postgres" if db_type == "PostgreSQL" else "mysql"
+        if st.button(f"Connecter {db_type}",type="primary"):
+            with st.spinner("Connexion…"):
+                try:
+                    df=load_data(src_key,host=host,port=port,db=db,user=user,password=pwd,query=query)
+                    st.session_state.source_name=f"{db_type.lower()}_query"
+                except Exception as e: st.error(f"Erreur {db_type} : {e}")
+
     # ── Données de démo ────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     c1,c2,c3 = st.columns([1,2,1])
@@ -975,8 +1015,7 @@ if step == 1:
             })
             df = pd.concat([df,df.sample(25)],ignore_index=True)
             st.session_state.source_name = "demo_ecommerce.csv"
-    if df is None:
-        df = st.session_state.get("df")
+
     if df is not None:
         st.session_state.df = df
         st.markdown(f"""
@@ -1001,6 +1040,27 @@ elif step == 2:
     if df is None: st.session_state.step=1; st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # Help box explicative
+    st.markdown('''
+    <div class="help-box">
+      <div class="help-box-title">💡 Comment fonctionnent les règles métier ?</div>
+      <div class="help-box-body">
+        Une règle métier vérifie une contrainte sur <strong>chaque ligne</strong> de votre dataset.
+        Choisissez une colonne, un opérateur, et une valeur seuil — l'engine compte le nombre de violations.<br><br>
+        <strong>Exemples concrets :</strong>
+        <div class="help-example">
+          age &gt;= 0           → pas d'âge négatif<br>
+          price &gt; 0          → prix toujours positif<br>
+          status == "active"    → statut valide uniquement<br>
+          discount &lt;= 100    → remise max 100%
+        </div>
+        Les règles s'ajoutent à la dimension <strong>Cohérence</strong> (15% du score global).
+        Vous pouvez passer cette étape si vous n'avez pas de contraintes métier spécifiques.
+      </div>
+    </div>
+    ''', unsafe_allow_html=True)
+
     cl, cr = st.columns([1.1, 1])
 
     with cl:
