@@ -752,7 +752,7 @@ for k,v in [("step",1),("df",None),("result",None),("rules",[]),
             ("dbx_enabled",False),("dbx_workspace",""),("dbx_token",""),("dbx_cluster",""),
             ("dbx_catalog",""),("dbx_schema",""),("dbx_table",""),
             ("dbx_tables_list",[]),("dbx_mode","delta"),
-            ("admin_mode",False),("page","app"),("pseudo","")]:
+            ("admin_mode",False)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -1075,113 +1075,7 @@ with st.sidebar:
 # ÉTAPE 1 — SOURCE
 # ══════════════════════════════════════════════════════════════
 
-# ══════════════════════════════════════════════════════════════
-# NAVIGATION — leaderboard ou app
-# ══════════════════════════════════════════════════════════════
-with st.sidebar:
-    if st.button("Deconnexion"):
-        auth.logout(st.session_state); st.rerun()
-    if st.button("Leaderboard"):
-        st.session_state.page = "leaderboard"; st.rerun()
-    if st.button("Retour app"):
-        st.session_state.page = "app"; st.rerun()
 
-# ══════════════════════════════════════════════════════════════
-# PAGE LEADERBOARD
-# ══════════════════════════════════════════════════════════════
-if st.session_state.page == "leaderboard":
-    import json, os
-    BOARD_FILE = "leaderboard.json"
-    def load_board():
-        if os.path.exists(BOARD_FILE):
-            try: return json.load(open(BOARD_FILE))
-            except: return []
-        return []
-    def save_board(entries):
-        json.dump(entries, open(BOARD_FILE,"w"), ensure_ascii=False)
-    board = load_board()
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    c1,c2,c3 = st.columns([1,3,1])
-    with c2:
-        st.markdown("""
-        <div style="text-align:center;margin-bottom:28px;">
-          <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;
-                      color:var(--accent2);letter-spacing:3px;text-transform:uppercase;
-                      margin-bottom:10px;">Challenge DataQuality</div>
-          <div style="font-family:'Instrument Serif',serif;font-size:2.6rem;
-                      color:var(--text);letter-spacing:-1px;">Leaderboard</div>
-          <div style="font-size:0.85rem;color:var(--muted);margin-top:6px;">
-            Qui trouvera le plus de problemes dans le dataset piege ?
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div style="background:linear-gradient(135deg,#EEF2FF,#E0E7FF);
-                    border:1.5px solid #C7D2FE;border-radius:14px;
-                    padding:18px 22px;margin-bottom:20px;">
-          <div style="font-family:'Cabinet Grotesk',sans-serif;font-weight:700;
-                      font-size:0.9rem;color:var(--accent2);margin-bottom:6px;">
-            Dataset challenge e-commerce piege
-          </div>
-          <div style="font-size:0.78rem;color:var(--muted);">
-            530 lignes · 14 colonnes · erreurs volontaires sur 9 dimensions
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        try:
-            csv_bytes = open("challenge_dataquality.csv","rb").read()
-            st.download_button(
-                "Telecharger le dataset challenge",
-                data=csv_bytes,
-                file_name="challenge_dataquality.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        except:
-            st.info("Placez challenge_dataquality.csv a la racine du repo.")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="card-label">Classement</div>', unsafe_allow_html=True)
-
-        if board:
-            board_sorted = sorted(board, key=lambda x: x["score"], reverse=True)
-            medals = ["1", "2", "3"]
-            for i, entry in enumerate(board_sorted[:20]):
-                medal = medals[i] if i < 3 else str(i+1)
-                sc_c  = sc_hex(entry["score"])
-                st.markdown(f"""
-                <div style="display:flex;align-items:center;gap:12px;
-                            background:var(--surface);border:1.5px solid var(--border);
-                            border-radius:10px;padding:12px 16px;margin-bottom:6px;">
-                  <div style="font-size:1.1rem;width:28px;text-align:center;
-                              font-family:'Instrument Serif',serif;color:var(--accent2);">#{medal}</div>
-                  <div style="flex:1;">
-                    <div style="font-weight:700;font-size:0.88rem;color:var(--text);">{entry["pseudo"]}</div>
-                    <div style="font-size:0.68rem;color:var(--muted);margin-top:1px;">{entry["source"]} · {entry["date"]}</div>
-                  </div>
-                  <div style="font-family:'Instrument Serif',serif;font-size:1.6rem;color:{sc_c};">{entry["score"]}</div>
-                  <div style="font-size:0.7rem;color:{sc_c};font-weight:700;min-width:60px;text-align:right;">{entry["issues"]} issues</div>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background:var(--surface);border:1px dashed var(--border2);
-                        border-radius:12px;padding:44px 20px;text-align:center;color:var(--dim);">
-              <div style="font-size:2rem;margin-bottom:8px;">?</div>
-              <div style="font-size:0.85rem;">Aucun score encore — soyez le premier !</div>
-            </div>""", unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Retour a l app", type="primary", use_container_width=True):
-            st.session_state.page = "app"; st.rerun()
-    st.stop()
-
-# ══════════════════════════════════════════════════════════════
-# APP PRINCIPALE
-# ══════════════════════════════════════════════════════════════
 if step == 1:
     st.markdown("""
     <div class="hero">
@@ -1195,24 +1089,6 @@ if step == 1:
       </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # Banniere challenge
-    ch1,ch2,ch3 = st.columns([1,2,1])
-    with ch2:
-        st.markdown("""
-        <div style="background:linear-gradient(135deg,#FFF7ED,#FEF3C7);
-                    border:1.5px solid #FCD34D;border-radius:14px;
-                    padding:14px 18px;text-align:center;margin-bottom:6px;">
-          <div style="font-weight:700;font-size:0.88rem;color:#92400E;">
-            Challenge DataQuality — Testez vos skills
-          </div>
-          <div style="font-size:0.75rem;color:#B45309;margin-top:4px;">
-            Dataset e-commerce piege · Combien de problemes trouvez-vous ?
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("Voir le leaderboard et telecharger le dataset", use_container_width=True):
-            st.session_state.page = "leaderboard"; st.rerun()
 
     # ── Connexion Databricks (optionnel) ──────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1614,29 +1490,173 @@ elif step == 2:
                     "value":     rule_val,
                 }); st.rerun()
 
-        # Prédéfinies
+        # Règles suggérées — détection intelligente
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="card-label">Règles suggérées</div>', unsafe_allow_html=True)
-        numeric_cols = df.select_dtypes(include=["float64","int64"]).columns.tolist()
-        presets = []
-        for col in numeric_cols:
-            if any(kw in col.lower() for kw in ["price","prix","amount","montant","cost"]):
-                presets.append({"name":f"{col} positif","condition":f"`{col}` >= 0","column":col,"severity":"high"})
-            if "age" in col.lower():
-                presets.append({"name":f"{col} valide (0-120)","condition":f"`{col}` >= 0 and `{col}` <= 120","column":col,"severity":"high"})
-        if presets:
-            for p in presets:
-                c1,c2 = st.columns([5,1])
-                c1.markdown(f"""
-                <div class="rule-item">
-                  <div class="rule-name-t">{p['name']}</div>
-                  <div class="rule-cond-t">{p['condition']}</div>
-                </div>""", unsafe_allow_html=True)
-                if c2.button("＋",key=f"p_{p['name']}"):
-                    if p not in st.session_state.rules:
-                        st.session_state.rules.append(p); st.rerun()
-        else:
-            st.markdown('<div style="color:var(--muted);font-size:0.8rem;">Aucune colonne numérique détectée.</div>', unsafe_allow_html=True)
+
+        @st.cache_data(show_spinner=False)
+        def _generate_suggestions(cols, dtypes_str, sample_json):
+            import json
+            sample = pd.read_json(sample_json, orient="records")
+            detected = ColumnAutoDetector().detect(sample)
+            suggestions = []
+
+            num_cols = [c for c,d in zip(cols, dtypes_str.split("|")) if "int" in d or "float" in d]
+            obj_cols = [c for c,d in zip(cols, dtypes_str.split("|")) if "object" in d]
+
+            # 1. Colonnes email → format valide
+            for col in detected["email_columns"]:
+                suggestions.append({
+                    "name": f"{col} — format email valide",
+                    "condition": f"`{col}`.str.contains('@', na=False)",
+                    "column": col, "severity": "high",
+                    "tag": "Email"
+                })
+
+            # 2. Colonnes numériques → stats pour deviner les bornes
+            for col in num_cols:
+                cl = col.lower()
+                col_data = sample[col].dropna()
+                if len(col_data) == 0:
+                    continue
+                vmin, vmax = col_data.min(), col_data.max()
+                pct_neg = (col_data < 0).mean()
+
+                # Prix / montant / coût → positif
+                if any(kw in cl for kw in ["price","prix","amount","montant","cost","coût","revenue","ca","chiffre"]):
+                    suggestions.append({
+                        "name": f"{col} — valeur positive",
+                        "condition": f"`{col}` >= 0",
+                        "column": col, "severity": "high", "tag": "Validité"
+                    })
+                    # Max réaliste si pas de valeurs > 100k
+                    if vmax < 100000:
+                        cap = int(vmax * 3)
+                        suggestions.append({
+                            "name": f"{col} — pas d'outlier (< {cap:,})",
+                            "condition": f"`{col}` <= {cap}",
+                            "column": col, "severity": "medium", "tag": "Distribution"
+                        })
+
+                # Âge → entre 0 et 120
+                elif "age" in cl:
+                    suggestions.append({
+                        "name": f"{col} — âge valide (0–120)",
+                        "condition": f"`{col}` >= 0 and `{col}` <= 120",
+                        "column": col, "severity": "high", "tag": "Validité"
+                    })
+
+                # Pourcentage / taux / discount → entre 0 et 1 (ou 0-100)
+                elif any(kw in cl for kw in ["discount","taux","rate","pct","pourcent","ratio"]):
+                    if vmax <= 1.05:
+                        suggestions.append({
+                            "name": f"{col} — taux entre 0 et 1",
+                            "condition": f"`{col}` >= 0 and `{col}` <= 1",
+                            "column": col, "severity": "high", "tag": "Validité"
+                        })
+                    else:
+                        suggestions.append({
+                            "name": f"{col} — pourcentage entre 0 et 100",
+                            "condition": f"`{col}` >= 0 and `{col}` <= 100",
+                            "column": col, "severity": "high", "tag": "Validité"
+                        })
+
+                # Quantité / nombre → positif
+                elif any(kw in cl for kw in ["qty","quantity","quantite","nb_","count","nombre","nbr"]):
+                    suggestions.append({
+                        "name": f"{col} — quantité positive",
+                        "condition": f"`{col}` >= 0",
+                        "column": col, "severity": "medium", "tag": "Validité"
+                    })
+
+                # Toute colonne numérique avec des négatifs suspects (> 5%)
+                elif pct_neg > 0.05:
+                    suggestions.append({
+                        "name": f"{col} — valeur non négative",
+                        "condition": f"`{col}` >= 0",
+                        "column": col, "severity": "medium", "tag": "Cohérence"
+                    })
+
+            # 3. Colonnes catégorielles → valeurs autorisées si peu de valeurs uniques
+            for col in obj_cols:
+                col_data = sample[col].dropna().astype(str)
+                uniq = col_data.unique().tolist()
+                n_uniq = len(uniq)
+                cl = col.lower()
+
+                if 2 <= n_uniq <= 6 and len(col_data) >= 20:
+                    vals = [f"'{v}'" for v in sorted(uniq)[:6]]
+                    vals_str = ", ".join(vals)
+                    suggestions.append({
+                        "name": f"{col} — valeur autorisée",
+                        "condition": f"`{col}`.isin([{vals_str}])",
+                        "column": col, "severity": "medium", "tag": "Validité"
+                    })
+
+                # Casse — si mélange majuscules/minuscules détecté
+                if n_uniq > 1:
+                    lower_vals = set(col_data.str.lower().unique())
+                    if len(lower_vals) < n_uniq:
+                        suggestions.append({
+                            "name": f"{col} — casse cohérente (minuscules)",
+                            "condition": f"`{col}` == `{col}`.str.lower()",
+                            "column": col, "severity": "low", "tag": "Standard."
+                        })
+
+            # 4. Corrélations HT/TTC depuis ColumnAutoDetector
+            for corr in detected["correlation_rules"]:
+                suggestions.append({
+                    "name": f"{corr['col_a']} < {corr['col_b']} (cohérence)",
+                    "condition": f"`{corr['col_a']}` <= `{corr['col_b']}`",
+                    "column": corr["col_a"], "severity": corr["severity"], "tag": "Cohérence"
+                })
+
+            return suggestions
+
+        # Couleurs par tag
+        TAG_COLORS = {
+            "Email": "#4F46E5", "Validité": "#EF4444", "Distribution": "#F59E0B",
+            "Cohérence": "#0D9488", "Standard.": "#7C3AED", "Anomalie": "#F97316",
+        }
+
+        try:
+            _dtypes_str = "|".join([str(df[c].dtype) for c in df.columns])
+            _sample_json = df.head(200).to_json(orient="records", date_format="iso")
+            suggestions = _generate_suggestions(
+                tuple(df.columns.tolist()), _dtypes_str, _sample_json
+            )
+
+            # Filtrer celles déjà ajoutées
+            existing_names = {r["name"] for r in st.session_state.rules}
+            suggestions = [s for s in suggestions if s["name"] not in existing_names]
+
+            if suggestions:
+                for p in suggestions:
+                    tag_color = TAG_COLORS.get(p.get("tag",""), "#64748B")
+                    sev_color = {"high":"#EF4444","medium":"#F59E0B","low":"#10B981"}.get(p["severity"],"#64748B")
+                    c1,c2 = st.columns([5,1])
+                    c1.markdown(f"""
+                    <div class="rule-item" style="border-left:3px solid {tag_color};">
+                      <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+                        <span style="background:{tag_color};color:white;font-size:0.6rem;
+                                     font-weight:700;padding:1px 6px;border-radius:4px;">
+                          {p.get("tag","")}
+                        </span>
+                        <span style="font-size:0.65rem;color:{sev_color};font-weight:700;">
+                          {p["severity"].upper()}
+                        </span>
+                      </div>
+                      <div class="rule-name-t">{p["name"]}</div>
+                      <div class="rule-cond-t">{p["condition"]}</div>
+                    </div>""", unsafe_allow_html=True)
+                    if c2.button("＋", key=f"sug_{p['name']}"):
+                        st.session_state.rules.append({k:v for k,v in p.items() if k != "tag"})
+                        st.rerun()
+            else:
+                st.markdown('<div style="color:var(--muted);font-size:0.8rem;padding:8px 0;">Toutes les règles suggérées ont déjà été ajoutées.</div>', unsafe_allow_html=True)
+
+        except Exception as _e:
+            st.markdown(f'<div style="color:var(--muted);font-size:0.8rem;">Suggestions indisponibles : {_e}</div>', unsafe_allow_html=True)
 
     with cr:
         st.markdown(f'<div class="sec-title">Règles actives ({len(st.session_state.rules)})</div>', unsafe_allow_html=True)
@@ -1889,75 +1909,6 @@ elif step == 4:
         else:
             st.warning("fpdf2 non installé — ajoutez-le à requirements.txt")
 
-        # ── Partage LinkedIn ─────────────────────────────────
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="card-label">Partager vos resultats</div>', unsafe_allow_html=True)
-
-        _g  = result.global_score
-        _ni = len(result.issues)
-        _nh = len([i for i in result.issues if i.get("severity")=="high"])
-        _em = "Excellent" if _g>=80 else ("Moyen" if _g>=60 else "Critique")
-
-        linkedin_text = f"""Je viens de scorer mon dataset sur DataQuality Agent.
-
-Score global : {_g}/100 — {_em}
-{result.row_count:,} lignes · {result.col_count} colonnes
-{_nh} problemes critiques · {_ni} au total
-
-Dimensions cles :
-Completude : {result.completeness}/100
-Validite : {result.validity}/100
-Coherence : {result.consistency}/100
-
-Outil : DataQuality Agent — scoring 9 dimensions, connecteur Databricks natif, rapport PDF.
-
-#DataQuality #DataEngineering #Databricks"""
-
-        st.text_area(
-            "Texte LinkedIn pre-rempli — copiez et postez !",
-            value=linkedin_text,
-            height=210,
-            key="li_share",
-        )
-
-        # ── Leaderboard ──────────────────────────────────────
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="card-label">Rejoindre le leaderboard</div>', unsafe_allow_html=True)
-
-        import json, os
-        BOARD_FILE = "leaderboard.json"
-        def _load_b():
-            if os.path.exists(BOARD_FILE):
-                try: return json.load(open(BOARD_FILE))
-                except: return []
-            return []
-        def _save_b(e): json.dump(e, open(BOARD_FILE,"w"), ensure_ascii=False)
-
-        lc1,lc2 = st.columns([2,1])
-        _pseudo = lc1.text_input("Votre pseudo public",
-            value=st.session_state.get("pseudo",""),
-            placeholder="ex : Marie D. — Data Engineer")
-        st.session_state.pseudo = _pseudo
-
-        if lc2.button("Poster mon score", type="primary", use_container_width=True):
-            if not _pseudo.strip():
-                st.markdown('<div class="alert alert-err">Entrez un pseudo.</div>', unsafe_allow_html=True)
-            else:
-                _board = _load_b()
-                _board = [e for e in _board if e["pseudo"] != _pseudo.strip()]
-                _board.append({
-                    "pseudo":  _pseudo.strip(),
-                    "score":   result.global_score,
-                    "issues":  _ni,
-                    "source":  result.table_name,
-                    "date":    datetime.now().strftime("%d/%m/%Y"),
-                    "engine":  result.engine,
-                })
-                _save_b(_board)
-                st.markdown(f'<div class="alert alert-ok">Score poste : <strong>{result.global_score}/100</strong></div>', unsafe_allow_html=True)
-
-        if st.button("Voir le leaderboard", use_container_width=True):
-            st.session_state.page = "leaderboard"; st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Nouvel audit", use_container_width=True):
